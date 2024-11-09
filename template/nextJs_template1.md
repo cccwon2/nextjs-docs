@@ -292,3 +292,202 @@ export const verifyJWT = (token: string) => {
 4. **Middleware로 보호된 경로 접근 제어.**
 
 필요에 따라 리프레시 토큰 로직이나 더 세부적인 에러 처리를 추가하면 됩니다.
+
+`zod` 스키마를 폴더와 파일로 분리하여 관리하는 것은 매우 좋은 접근입니다. 이를 통해 스키마를 모듈화하고, 재사용성을 높이며, 파일 간 의존성을 명확히 할 수 있습니다. 제안하신 구조에 따라 `zod` 스키마를 설계하고 구현하겠습니다.
+
+---
+
+## 📂 폴더 구조 제안
+
+```plaintext
+src/
+├── zod/
+│   ├── commonSchema.ts                 # 공통 스키마
+│   ├── authSchema.ts                   # 인증 관련 스키마
+│   └── dashboardSchema.ts              # 대시보드 관련 스키마
+```
+
+---
+
+## 🛠️ 구현 예제
+
+### 1️⃣ **`commonSchema.ts`**
+
+공통으로 사용되는 스키마를 정의합니다. 예를 들어, 이메일, 비밀번호, ID 등 재사용 가능한 유효성 검사 규칙을 작성합니다.
+
+```typescript
+import { z } from "zod";
+
+// 이메일 스키마
+export const emailSchema = z.string().email({ message: "Invalid email format" });
+
+// 비밀번호 스키마
+export const passwordSchema = z
+  .string()
+  .min(8, { message: "Password must be at least 8 characters" })
+  .max(64, { message: "Password cannot exceed 64 characters" });
+
+// ID 스키마
+export const idSchema = z.string().uuid({ message: "Invalid ID format" });
+```
+
+---
+
+### 2️⃣ **`authSchema.ts`**
+
+로그인, 회원가입 등 인증과 관련된 스키마를 정의합니다. 공통 스키마를 가져와 활용합니다.
+
+```typescript
+import { z } from "zod";
+import { emailSchema, passwordSchema } from "./commonSchema";
+
+// 로그인 스키마
+export const loginSchema = z.object({
+  email: emailSchema,
+  password: passwordSchema,
+});
+
+// 회원가입 스키마
+export const registerSchema = z
+  .object({
+    email: emailSchema,
+    password: passwordSchema,
+    confirmPassword: z.string().min(8, { message: "Password confirmation must match the password" }),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords must match",
+    path: ["confirmPassword"],
+  });
+```
+
+---
+
+### 3️⃣ **`dashboardSchema.ts`**
+
+대시보드와 관련된 API 요청이나 입력값 유효성 검사를 정의합니다.
+
+```typescript
+import { z } from "zod";
+import { idSchema } from "./commonSchema";
+
+// 대시보드 항목 생성 스키마
+export const createDashboardItemSchema = z.object({
+  title: z.string().min(1, { message: "Title is required" }),
+  description: z.string().optional(),
+});
+
+// 대시보드 항목 ID 기반 요청 스키마
+export const dashboardItemIdSchema = z.object({
+  id: idSchema,
+});
+```
+
+---
+
+## 사용 예시
+
+### **API에서 사용**
+
+API 라우트에서 요청 데이터를 검증할 때 `zod` 스키마를 사용합니다.
+
+#### **로그인 API (`app/api/auth/login/route.ts`)**
+
+```typescript
+import { NextResponse } from "next/server";
+import { loginSchema } from "@/zod/authSchema";
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const validatedData = loginSchema.parse(body); // 스키마로 요청 데이터 검증
+
+    // 외부 API 요청
+    const response = await fetch(`${process.env.EXTERNAL_API_BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(validatedData),
+    });
+
+    if (!response.ok) {
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+    }
+
+    const { accessToken, refreshToken, user } = await response.json();
+
+    return NextResponse.json({ user });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ errors: error.errors }, { status: 400 });
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+```
+
+---
+
+### **프론트엔드에서 사용**
+
+React 컴포넌트나 상태 관리 로직에서도 `zod` 스키마를 사용할 수 있습니다.
+
+#### **로그인 폼 예제 (`app/login/page.tsx`)**
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { loginSchema } from "@/zod/authSchema";
+
+export default function LoginPage() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLogin = async () => {
+    try {
+      // 입력 데이터 검증
+      const validatedData = loginSchema.parse({ email, password });
+
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validatedData),
+      });
+
+      if (!response.ok) {
+        throw new Error("Login failed");
+      }
+
+      const { user } = await response.json();
+      console.log("Logged in user:", user);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        setError(error.errors.map((e) => e.message).join(", "));
+      } else {
+        setError(error.message);
+      }
+    }
+  };
+
+  return (
+    <div>
+      <h1>Login</h1>
+      <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+      <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+      <button onClick={handleLogin}>Login</button>
+      {error && <p style={{ color: "red" }}>{error}</p>}
+    </div>
+  );
+}
+```
+
+---
+
+## 📌 장점
+
+1. **재사용성**: 공통 스키마를 다양한 기능에서 재활용할 수 있습니다.
+2. **모듈화**: 각 스키마가 독립적인 파일로 관리되어 유지보수가 용이합니다.
+3. **명확한 분리**: 스키마를 기능별로 나누어 코드 가독성과 개발 속도 향상.
+4. **에러 처리 일관성**: API와 프론트엔드 모두 같은 스키마를 사용하여 일관된 유효성 검사가 가능.
+
+이 구조는 스키마의 가독성과 관리 효율성을 높이며, 프로젝트의 확장성을 지원합니다. 👍
